@@ -1,0 +1,148 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+```{r}
+library(shiny)
+library(leaflet)
+library(leaflet.extras)
+library(leaflet.providers)
+library(tidygeocoder)
+library(sf)
+library(tigris)
+library(dplyr)
+```
+
+# Create RData app file
+```{r}
+
+
+setwd("C:/Users/juste/OneDrive - DePaul University/gitrepos/wellness_center/app_test")
+
+community_areas <- st_read("../layers/community_areas.shp") %>%
+  st_transform(4326)
+
+wellness_area_catchment <- st_read("../layers/wellness_center_catchment_area.shp") %>%
+  st_transform(4326)
+
+catchment_areas <- community_areas %>% 
+  filter(name == "Englewood" | name=="West Englewood") %>% 
+  select(geoid,
+         name) %>% 
+  bind_rows(wellness_area_catchment %>% 
+              mutate(geoid = as.character("0")) %>% 
+              select(geoid, name = Name)) %>% 
+  st_cast('MULTIPOLYGON')
+
+st_write(catchment_areas, "../layers/catchment_areas.shp")
+
+study_area_svi_estimates_geom <- tract_boundaries_geom %>% 
+  left_join(study_area_svi_estimates, by=c("geoid_tract"="GEOID")) %>%  
+  st_as_sf() %>% 
+  st_set_crs(3435)
+
+save(chicago, catchment_areas, tract_boundaries_geom, study_area_svi_estimates_geom, wellness_center_map, file="wellness_app_data.RData")
+
+catchment_areas <- catchment_areas %>% 
+  mutate(name = case_when(name == "Wellness Center Catchment" ~ "Wellness Center",
+                          .default = name))
+
+
+
+
+```
+
+# Create Leaflet Map
+
+```{r}
+load("wellness_app_data.RData")
+
+# plot state and county maps with leaflet
+wellness_labels <- sprintf(
+  "<strong>Census Tract %s</strong><br/>
+  <i>%s %s</i><br/>
+  Total population: %s<br/>
+  Households: %s<br/>
+  Housing units: %s<br/>
+  Non-white: %0.1f%%<br/>
+  No vehicles: %0.1f%%<br/>
+  Uninsured: %0.1f%%<br/>
+  Poverty: %0.1f%%<br/>
+  No Diploma: %0.1f%%<br/>
+  SVI: %0.2f",
+  study_area_svi_estimates_geom$name,
+  study_area_svi_estimates_geom$title,
+  study_area_svi_estimates_geom$type,
+  format(study_area_svi_estimates_geom$E_TOTPOP,big.mark=","),
+  format(study_area_svi_estimates_geom$E_HH, big.mark=","),
+  format(study_area_svi_estimates_geom$E_HU, big.mark=","),
+  study_area_svi_estimates_geom$EP_MINRTY,
+  study_area_svi_estimates_geom$EP_NOVEH,
+  study_area_svi_estimates_geom$EP_UNINSUR,
+  study_area_svi_estimates_geom$EP_POV150,
+  study_area_svi_estimates_geom$EP_NOHSDP,
+  study_area_svi_estimates_geom$RPL_themes) %>%
+lapply(htmltools::HTML)
+
+# create palette
+pal_wellness <- colorBin(
+  palette = "Greys",
+  domain = study_area_svi_estimates_geom$RPL_themes,
+  6,
+  pretty=FALSE)
+
+# center icon
+centerIcon <- makeIcon(
+  iconUrl = "images/orange_circle.png",
+  iconWidth = 20, iconHeight = 20
+)
+
+# function for creating mode-specific map
+wellness_center_map <- leaflet(study_area_svi_estimates_geom %>% st_transform(4326)) %>%
+  setView(lng = -87.66335506598715,
+          lat = 41.823572770941,
+          zoom = 11) %>%
+  addMapPane("Tiles", zIndex = 400)  %>%
+  addMapPane("Boundaries", zIndex = 420) %>%
+  addMapPane("Census Tracts", zIndex = 410) %>%
+  addMapPane("Chicago", zIndex = 460) %>%
+  addMapPane("Wellness Center", zIndex = 460) %>%
+  addTiles(urlTemplate = "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png") %>% 
+  addPolylines(
+    data = chicago %>% st_transform(4326),
+    stroke = TRUE,
+    weight = 5,
+    opacity = 1,
+    color = "black",
+    options = pathOptions(pane = "Chicago")
+  ) %>%
+  addPolylines(
+    data = catchment_areas %>% st_transform(4326),
+    stroke = TRUE,
+    weight = 3,
+    opacity = 1,
+    color = "darkred",
+    group = "Boundaries",
+    options = pathOptions(pane = "Boundaries")
+  ) %>%
+  addPolygons(
+    fillColor = ~ pal_wellness(RPL_themes),
+    weight = 0.25,
+    opacity = 0.5,
+    color = "white",
+    fillOpacity = 0.4,
+    label = wellness_labels,
+    options = pathOptions(pane = "Census Tracts")
+  ) %>%
+  addResetMapButton() %>%
+  addScaleBar(position = "bottomleft") 
+  # addLayersControl(
+  #   overlayGroups = c("Boundaries"),
+  #   options = layersControlOptions(collapsed = FALSE) 
+  # )
+
+wellness_center_map
+
+```
+
